@@ -32,8 +32,8 @@ class Claim(BaseModel):
     target_end: AwareDatetime
 
     point: float
-    lower: float
-    upper: float
+    lower: float | None  # None: no lower limit (a ceiling claim)
+    upper: float | None  # None: no upper limit (a floor claim)
     coverage: float = Field(gt=0, lt=1)
 
     reference_class: str | None = None  # must be decidable at as_of
@@ -43,7 +43,13 @@ class Claim(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> Claim:
-        if not self.lower <= self.upper:
+        if self.lower is None and self.upper is None:
+            raise ValueError("a claim needs at least one limit")
+        if (
+            self.lower is not None
+            and self.upper is not None
+            and self.lower > self.upper
+        ):
             raise ValueError("range must satisfy lower <= upper")
         if self.data_cutoff > self.as_of:
             raise ValueError(

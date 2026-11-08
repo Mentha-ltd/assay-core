@@ -15,12 +15,17 @@ def check_pair(Claim: Claim, res: Resolution) -> None:
 def is_covered(Claim: Claim, res: Resolution) -> bool:
     """did the truth land inside the claimed  range"""
     check_pair(Claim, res)
-    return Claim.lower <= res.realised_value <= Claim.upper
+    y = res.realised_value
+    above_floor = Claim.lower is None or Claim.lower <= y
+    below_ceiling = Claim.upper is None or y <= Claim.upper
+    return above_floor and below_ceiling
 
 
 def interval_score(Claim: Claim, res: Resolution) -> float:
     """Width fee plus a fine of 2/alpha times the miss distance (Gneiting & Raftery 2007)."""
     check_pair(Claim, res)
+    if Claim.lower is None or Claim.upper is None:
+        raise ValueError("interval score needs both limits; this claim is one-sided")
     alpha = 1 - Claim.coverage
     y = res.realised_value
     width = Claim.upper - Claim.lower
