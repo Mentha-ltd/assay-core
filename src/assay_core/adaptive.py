@@ -6,6 +6,11 @@ Distribution Shift", arXiv 2106.00170.
 Each day we build a range at coverage 1 - alpha_t. After the day we
 update alpha_t from whether the real error fell outside the range.
 Errors are signed: error = actual - forecast (for example GBP/MWh).
+
+Capped days: with n past errors the widest finite range has coverage
+(n - 1) / (n + 1). If ACI asks for more, we return that widest range
+and mark the day as capped. The range is infinite only with fewer
+than 2 past errors.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import numpy as np
 from assay_core.bounds import asymmetric_bounds, min_errors
 
 MIN_COVERAGE = 0.01  # our clip when alpha_t >= 1 (heuristic, not in the paper)
+CAP_TOLERANCE = 1e-9
 
 
 def aci_update(
@@ -39,19 +45,33 @@ def aci_update(
     return float(alpha_t + gamma * (target_alpha - int(missed)))
 
 
-def aci_interval(past_errors: np.ndarray, alpha_t: float) -> tuple[float, float]:
-    """Return (lower, upper) offsets at coverage 1 - alpha_t.
+def max_coverage(n_errors: int) -> float:
+    """Highest coverage with a finite range from n past errors."""
+    if n_errors < 2:
+        return 0.0
+    return (n_errors - 1) / (n_errors + 1)
 
-    The range is infinite when coverage is 1 or more, or when there are
-    too few past errors for that coverage. It never raises for these cases.
+
+def aci_interval(past_errors: np.ndarray, alpha_t: float) -> tuple[float, float, bool]:
+    """Return (lower, upper, capped) at coverage 1 - alpha_t.
+
+    capped is True when the asked coverage was above what the past
+    errors can give, so the widest finite range was returned instead.
+    The range is infinite only with fewer than 2 past errors.
     """
+    n = len(past_errors)
+    if n < 2:
+        return -math.inf, math.inf, True
+    cap = max_coverage(n)
     coverage = 1.0 - alpha_t
-    if coverage >= 1.0:
-        return -math.inf, math.inf
+    capped = coverage > cap + CAP_TOLERANCE
+    if capped:
+        coverage = cap
     coverage = max(coverage, MIN_COVERAGE)
-    if len(past_errors) < min_errors(coverage):
-        return -math.inf, math.inf
-    return asymmetric_bounds(past_errors, coverage)
+    if n < min_errors(coverage):  # cannot happen for n >= 2; kept as a guard
+        return -math.inf, math.inf, True
+    lower, upper = asymmetric_bounds(past_errors, coverage)
+    return lower, upper, capped
 
 
 @dataclass(frozen=True)
@@ -62,10 +82,15 @@ class AciRun:
     upper: np.ndarray
     alpha: np.ndarray  # alpha_t used on that day
     missed: np.ndarray  # True if the real error was outside the range
+    capped: np.ndarray  # True if the asked coverage could not be given
 
     @property
     def coverage(self) -> float:
         return float(1.0 - self.missed.mean())
+
+    @property
+    def capped_share(self) -> float:
+        return float(self.capped.mean())
 
 
 def run_aci(errors: np.ndarray, coverage: float, gamma: float, window: int) -> AciRun:
@@ -83,14 +108,15 @@ def run_aci(errors: np.ndarray, coverage: float, gamma: float, window: int) -> A
 
     target_alpha = 1.0 - coverage
     alpha = target_alpha
-    lower, upper, alphas, missed = [], [], [], []
+    lower, upper, alphas, missed, capped = [], [], [], [], []
     for t in range(window, len(values)):
-        lo, up = aci_interval(values[t - window : t], alpha)
+        lo, up, cap = aci_interval(values[t - window : t], alpha)
         miss = not (lo <= values[t] <= up)
         lower.append(lo)
         upper.append(up)
         alphas.append(alpha)
         missed.append(miss)
+        capped.append(cap)
         alpha = aci_update(alpha, miss, target_alpha, gamma)
 
     return AciRun(
@@ -98,4 +124,5 @@ def run_aci(errors: np.ndarray, coverage: float, gamma: float, window: int) -> A
         upper=np.array(upper),
         alpha=np.array(alphas),
         missed=np.array(missed),
+        capped=np.array(capped),
     )

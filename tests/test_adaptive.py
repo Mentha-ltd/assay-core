@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from assay_core.adaptive import aci_interval, aci_update, run_aci
+from assay_core.adaptive import aci_interval, aci_update, max_coverage, run_aci
 from assay_core.bounds import asymmetric_bounds
 
 
@@ -31,19 +31,34 @@ def test_bad_inputs_are_refused(args):
         aci_update(*args)
 
 
-def test_coverage_of_one_or_more_gives_infinite_range():
-    lower, upper = aci_interval(np.arange(50, dtype=float), -0.1)
-    assert math.isinf(lower) and math.isinf(upper)
+def test_max_coverage_by_hand():
+    assert max_coverage(19) == pytest.approx(0.90)
+    assert max_coverage(39) == pytest.approx(0.95)
+    assert max_coverage(1) == 0.0
 
 
-def test_too_few_errors_gives_infinite_range_not_an_error():
-    lower, upper = aci_interval(np.arange(10, dtype=float), 0.10)
-    assert lower == -math.inf and upper == math.inf
+def test_one_error_gives_infinite_range():
+    lower, upper, capped = aci_interval(np.array([1.0]), 0.10)
+    assert lower == -math.inf and upper == math.inf and capped
 
 
-def test_interval_matches_piece_1_when_enough_errors():
+def test_few_errors_give_widest_finite_range_and_flag_it():
+    errors = np.arange(10, dtype=float)
+    lower, upper, capped = aci_interval(errors, 0.10)
+    assert (lower, upper) == (0.0, 9.0)  # smallest and largest error
+    assert capped
+
+
+def test_alpha_below_zero_is_capped_not_infinite():
+    lower, upper, capped = aci_interval(np.arange(50, dtype=float), -0.1)
+    assert math.isfinite(lower) and math.isfinite(upper) and capped
+
+
+def test_not_capped_matches_piece_1_when_enough_errors():
     errors = np.random.default_rng(3).normal(0, 10, 100)
-    assert aci_interval(errors, 0.10) == asymmetric_bounds(errors, 0.90)
+    lower, upper, capped = aci_interval(errors, 0.10)
+    assert (lower, upper) == asymmetric_bounds(errors, 0.90)
+    assert not capped
 
 
 def jumping_errors(n=2400, jump_at=600, seed=0):
@@ -57,7 +72,7 @@ def test_fixed_range_falls_but_aci_stays_near_90_percent():
     errors = jumping_errors()
     window = 200
 
-    lower, upper = asymmetric_bounds(errors[:window], 0.90)  # fixed, never updated
+    lower, upper = asymmetric_bounds(errors[:window], 0.90)
     later = errors[window:]
     fixed_coverage = float(np.mean((later >= lower) & (later <= upper)))
 
@@ -71,6 +86,13 @@ def test_aci_stays_near_90_percent_when_errors_do_not_drift():
     errors = np.random.default_rng(5).normal(0.0, 10.0, 2400)
     aci = run_aci(errors, coverage=0.90, gamma=0.02, window=200)
     assert 0.87 <= aci.coverage <= 0.93
+
+
+def test_small_window_is_never_infinite_and_flags_capped_days():
+    aci = run_aci(jumping_errors(), coverage=0.90, gamma=0.02, window=19)
+    assert np.all(np.isfinite(aci.lower)) and np.all(np.isfinite(aci.upper))
+    assert aci.capped.any()
+    assert 0.0 < aci.capped_share <= 1.0
 
 
 def test_run_refuses_window_that_is_too_small():
