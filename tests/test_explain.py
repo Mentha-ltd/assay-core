@@ -171,3 +171,13 @@ def test_miss_size_is_in_the_users_units():
     actual = df.sort_values("t")["a"].iloc[int(m["row"])]
     expected = row["lower"] - actual if m["side"] == "below" else actual - row["upper"]
     assert m["miss_size"] == pytest.approx(expected)
+
+
+def test_advice_for_a_column_that_is_not_the_condition_says_to_use_it_as_condition():
+    rng = np.random.default_rng(3)
+    n = 5000
+    mode = rng.choice(["calm", "wild"], n)
+    err = np.where(mode == "wild", rng.normal(0, 6, n), rng.normal(0, 1, n))
+    df = pd.DataFrame({"t": range(n), "f": 0.0, "a": err, "mode": mode})
+    ex = assay_core.assess(df, "f", "a", sort_by="t").explain(df, by=["mode"])
+    assert any('condition="<this column>"' in f for f in ex.findings)

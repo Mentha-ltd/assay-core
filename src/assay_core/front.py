@@ -39,6 +39,7 @@ class Report:
     side: str = "both"
     by_scope: pd.DataFrame | None = None  # cases, hit_rate for in / out / unjudged
     columns: dict[str, str | None] | None = None  # column names used, for explain()
+    dropped: int = 0  # rows left out because the forecast or actual was missing
 
     @property
     def overall_hit_rate(self) -> float:
@@ -57,6 +58,8 @@ class Report:
             f"claimed {self.claimed:.0%} {kind} | judged {len(self.rows)} cases | "
             f"actual hit rate {self.overall_hit_rate:.1%}\n{t}"
         )
+        if self.dropped:
+            text += f"\n{self.dropped} rows dropped: forecast or actual missing"
         if self.by_scope is not None:
             text += f"\nby scope:\n{self.by_scope.round(3).to_string()}"
         return text
@@ -100,14 +103,24 @@ def assess(
     side: str = "both",
     features: Sequence[str] | None = None,
     tail: float = 0.01,
+    missing: str = "drop",
 ) -> Report:
     """Walk through the table in time order. Each case gets a range built only from earlier
     cases. Then count how often the actual value landed inside (or above the floor, or below
     the ceiling, when side is "floor" or "ceiling").
 
     features: names of input columns. If given, each case is also judged in or out of scope
-    (see scope.py) and the hit rate is reported separately for each."""
-    d, col = _prepare(df, condition)
+    (see scope.py) and the hit rate is reported separately for each.
+
+    missing: what to do with rows whose forecast or actual is missing. "drop" (default)
+    leaves them out and reports how many; "refuse" raises an error."""
+    if missing not in ("drop", "refuse"):
+        raise ValueError(f'missing must be "drop" or "refuse", got {missing!r}')
+    gaps = df[[forecast, actual]].isna().any(axis=1)
+    dropped = int(gaps.sum())
+    if dropped and missing == "refuse":
+        raise ValueError(f"{dropped} rows have a missing forecast or actual")
+    d, col = _prepare(df.loc[~gaps], condition)
     rows = walk_forward_conditional(
         d, forecast, actual, col, coverage, sort_by, window, min_group, side
     )
@@ -152,6 +165,7 @@ def assess(
         side=side,
         by_scope=by_scope,
         columns=columns,
+        dropped=dropped,
     )
 
 

@@ -124,6 +124,7 @@ def explain(
     if bins < 2 or periods < 2:
         raise ValueError("bins and periods must be at least 2")
     sort_by = cols["sort_by"]
+    df = df.loc[~df[[cols["forecast"], cols["actual"]]].isna().any(axis=1)]
     ordered = df.sort_values(sort_by, kind="stable") if sort_by else df
     ordered = ordered.reset_index(drop=True)
     feats = list(features or [])
@@ -275,10 +276,12 @@ def explain(
                 )
             )
 
+    own = by_condition["column"] == cols["condition"]
+    mine = "Its own errors still vary: look at the input bands."
+    add(by_condition[own], "group", mine)
+    other = 'condition="<this column>"'
     add(
-        by_condition,
-        "group",
-        "Its own errors still vary: look at the input bands for this group.",
+        by_condition[~own], "group", "Not the condition given to assess(): try " + other
     )
     add(
         by_input,
