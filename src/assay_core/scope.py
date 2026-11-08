@@ -10,6 +10,8 @@ passes. Nothing here knows what the columns mean.
 
 from __future__ import annotations
 
+import bisect
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -77,6 +79,24 @@ def learn_scope(df: pd.DataFrame, features: Sequence[str], tail: float = 0.01) -
     )
 
 
+def _quantile(sorted_values: list[float], q: float) -> float:
+    """Same number as np.quantile(values, q) (linear method), from an already sorted list."""
+    m = len(sorted_values)
+    virtual = (m - 1) * q
+    prev = math.floor(virtual)
+    if virtual >= m - 1:  # numpy clips both indexes to the last value
+        prev = m - 1
+        nxt = m - 1
+    else:
+        nxt = prev + 1
+    gamma = virtual - prev
+    a = sorted_values[prev]
+    b = sorted_values[nxt]
+    diff = b - a
+    # numpy's own lerp: adds from the left below the midpoint, subtracts from the right above
+    return b - diff * (1 - gamma) if gamma >= 0.5 else a + diff * gamma
+
+
 def walk_forward_scope(
     df: pd.DataFrame,
     features: Sequence[str],
@@ -88,30 +108,46 @@ def walk_forward_scope(
 
     Returns one row per input row: scope ("in", "out" or "unjudged"), reasons.
     A row is "unjudged" while fewer than min_history earlier rows exist
-    (default: 1 / tail, so 100 for a 1% tail)."""
+    (default: 1 / tail, so 100 for a 1% tail).
+
+    Rows with a missing value in any input column are not used to learn the range.
+    Each column keeps a sorted list of its past values: one insert (and one removal when
+    `window` is set) per row, so a long table takes seconds. The numbers are identical to
+    recomputing the percentiles from scratch for every row."""
     _check_tail(tail)
     cols = _columns(df, features)
     need = round(1 / tail) if min_history is None else min_history
     data = df[cols].to_numpy(float)
+    n = len(data)
+    complete = ~np.isnan(data).any(axis=1)
+    lists: list[list[float]] = [[] for _ in cols]
     scope, why = [], []
-    for i in range(len(df)):
-        past = data[(0 if window is None else max(0, i - window)) : i]
-        past = past[~np.isnan(past).any(axis=1)]
-        if len(past) < need:
+    for i in range(n):
+        if i > 0:
+            new = i - 1
+            if complete[new]:
+                for j in range(len(cols)):
+                    bisect.insort(lists[j], data[new, j])
+            old = new - window if window is not None else -1
+            if old >= 0 and complete[old]:
+                for j in range(len(cols)):
+                    del lists[j][bisect.bisect_left(lists[j], data[old, j])]
+        if len(lists[0]) < need:
             scope.append("unjudged")
             why.append("")
             continue
-        lo = np.quantile(past, tail, axis=0)
-        hi = np.quantile(past, 1 - tail, axis=0)
         parts = []
         for j, c in enumerate(cols):
             x = data[i, j]
             if np.isnan(x):
                 parts.append(f"{c} is missing")
-            elif x < lo[j]:
-                parts.append(f"{c} below learned {lo[j]:.4g}")
-            elif x > hi[j]:
-                parts.append(f"{c} above learned {hi[j]:.4g}")
+                continue
+            lo = _quantile(lists[j], tail)
+            hi = _quantile(lists[j], 1 - tail)
+            if x < lo:
+                parts.append(f"{c} below learned {lo:.4g}")
+            elif x > hi:
+                parts.append(f"{c} above learned {hi:.4g}")
         scope.append("out" if parts else "in")
         why.append("; ".join(parts))
     return pd.DataFrame({"scope": scope, "reasons": why}, index=df.index)
