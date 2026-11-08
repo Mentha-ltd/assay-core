@@ -7,11 +7,14 @@
     lower, upper, borrowed = model.range(point=120.0, condition="calm")
     # side="floor": upper is None. side="ceiling": lower is None. Default "both".
 
+    assess(..., features=["temp", "load"])   # also judges each case in or out of scope
+
 Units are the user's units. Nothing here knows what the numbers mean.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import pandas as pd
@@ -22,6 +25,7 @@ from assay_core.conditional import (
     range_for,
     walk_forward_conditional,
 )
+from assay_core.scope import walk_forward_scope
 
 ALL = "all cases"
 
@@ -32,6 +36,7 @@ class Report:
     rows: pd.DataFrame  # one row per case judged: lower, upper, hit, borrowed
     by_condition: pd.DataFrame  # cases, hit_rate, mean_gap, borrowed_share
     side: str = "both"
+    by_scope: pd.DataFrame | None = None  # cases, hit_rate for in / out / unjudged
 
     @property
     def overall_hit_rate(self) -> float:
@@ -40,10 +45,13 @@ class Report:
     def __str__(self) -> str:
         t = self.by_condition.round(3).to_string()
         kind = {"both": "range", "floor": "floor", "ceiling": "ceiling"}[self.side]
-        return (
+        text = (
             f"claimed {self.claimed:.0%} {kind} | judged {len(self.rows)} cases | "
             f"actual hit rate {self.overall_hit_rate:.1%}\n{t}"
         )
+        if self.by_scope is not None:
+            text += f"\nby scope:\n{self.by_scope.round(3).to_string()}"
+        return text
 
 
 @dataclass(frozen=True)
@@ -82,10 +90,15 @@ def assess(
     window: int | None = None,
     min_group: int = 0,
     side: str = "both",
+    features: Sequence[str] | None = None,
+    tail: float = 0.01,
 ) -> Report:
     """Walk through the table in time order. Each case gets a range built only from earlier
     cases. Then count how often the actual value landed inside (or above the floor, or below
-    the ceiling, when side is "floor" or "ceiling")."""
+    the ceiling, when side is "floor" or "ceiling").
+
+    features: names of input columns. If given, each case is also judged in or out of scope
+    (see scope.py) and the hit rate is reported separately for each."""
     d, col = _prepare(df, condition)
     rows = walk_forward_conditional(
         d, forecast, actual, col, coverage, sort_by, window, min_group, side
@@ -107,7 +120,20 @@ def assess(
             "borrowed_share": g["borrowed"].mean(),
         }
     )
-    return Report(claimed=coverage, rows=rows, by_condition=table, side=side)
+    by_scope = None
+    if features:
+        ordered = d.sort_values(sort_by, kind="stable") if sort_by else d
+        ordered = ordered.reset_index(drop=True)
+        judged = walk_forward_scope(ordered, features, tail=tail, window=window)
+        rows = rows.assign(
+            scope=judged.loc[rows["row"], "scope"].to_numpy(),
+            reasons=judged.loc[rows["row"], "reasons"].to_numpy(),
+        )
+        sg = rows.groupby("scope")["hit"]
+        by_scope = pd.DataFrame({"cases": sg.size(), "hit_rate": sg.mean()})
+    return Report(
+        claimed=coverage, rows=rows, by_condition=table, side=side, by_scope=by_scope
+    )
 
 
 def fit(
