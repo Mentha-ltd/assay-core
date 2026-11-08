@@ -2,6 +2,7 @@
 
     report = assess(df, forecast="f", actual="a", condition="mode", sort_by="time")
     print(report)                      # honest hit rate per condition, no look-ahead
+    print(report.explain(df, features=["temp"]))   # where and why the misses happened
 
     model = fit(df, forecast="f", actual="a", condition="mode", side="floor")
     lower, upper, borrowed = model.range(point=120.0, condition="calm")
@@ -37,10 +38,17 @@ class Report:
     by_condition: pd.DataFrame  # cases, hit_rate, mean_gap, borrowed_share
     side: str = "both"
     by_scope: pd.DataFrame | None = None  # cases, hit_rate for in / out / unjudged
+    columns: dict[str, str | None] | None = None  # column names used, for explain()
 
     @property
     def overall_hit_rate(self) -> float:
         return float(self.rows["hit"].mean())
+
+    def explain(self, df: pd.DataFrame, **kw):
+        """Where and why the misses happened. df is the table given to assess()."""
+        from assay_core.explain import explain
+
+        return explain(self, df, **kw)
 
     def __str__(self) -> str:
         t = self.by_condition.round(3).to_string()
@@ -131,8 +139,19 @@ def assess(
         )
         sg = rows.groupby("scope")["hit"]
         by_scope = pd.DataFrame({"cases": sg.size(), "hit_rate": sg.mean()})
+    columns = {
+        "forecast": forecast,
+        "actual": actual,
+        "condition": condition,
+        "sort_by": sort_by,
+    }
     return Report(
-        claimed=coverage, rows=rows, by_condition=table, side=side, by_scope=by_scope
+        claimed=coverage,
+        rows=rows,
+        by_condition=table,
+        side=side,
+        by_scope=by_scope,
+        columns=columns,
     )
 
 
