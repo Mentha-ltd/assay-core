@@ -96,23 +96,32 @@ def autonomy_level(
     *,
     confidence: float = 0.95,
     margin: float = 0.05,
+    tolerance: float = 0.0,
     scope_ok: bool = True,
 ) -> Autonomy:
     """Level 0, 1 or 2 from the record. A drop in the record drops the level.
 
-    Level 2: the floor reaches the claim.
+    Level 2: the floor reaches the claim, less `tolerance`.
     Level 1: the floor is within `margin` of the claim.
     Level 0: otherwise, or the record contradicts the claim, or scope is not ok.
+
+    tolerance: for an accuracy claim leave it at 0. A range claimed at 90% is
+    expected to miss 10% of the time, so a well calibrated range sits at the
+    claim and its floor sits a little below. Allow a small tolerance there
+    (the envelope uses 0.02).
     """
     _check(hits, n)
     if not 0.0 < claimed < 1.0:
         raise ValueError("claimed must be between 0 and 1")
     if not 0.0 <= margin < claimed:
         raise ValueError("margin must be between 0 and the claim")
+    if not 0.0 <= tolerance <= margin:
+        raise ValueError("tolerance must be between 0 and the margin")
     floor, ceiling = accuracy_range(hits, n, confidence)
     misses = n - hits
-    need = cases_needed(claimed, confidence, misses=0)
-    need_now = cases_needed(claimed, confidence, misses=misses)
+    target = claimed - tolerance
+    need = cases_needed(target, confidence, misses=0)
+    need_now = cases_needed(target, confidence, misses=misses)
     if not scope_ok:
         level, why = 0, "today's input is outside what the record covers"
     elif n > 0 and ceiling < claimed:
@@ -120,7 +129,7 @@ def autonomy_level(
             0,
             "the record contradicts the claim: even the best case is below it",
         )
-    elif floor >= claimed:
+    elif floor >= target:
         level, why = 2, "the record supports the claim"
     elif floor >= claimed - margin:
         level, why = (
