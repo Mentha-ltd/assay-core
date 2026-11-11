@@ -13,6 +13,15 @@ def make(n=200, seed=0):
     return pd.DataFrame({"a": a, "lo": -1.28, "hi": 1.28, "c": cond})
 
 
+def days(n_days=60, slots=96, seed=1, day_sd=1.0):
+    """Each day has its own volatility, so the slots of one day move together."""
+    r = np.random.default_rng(seed)
+    sd = np.exp(r.normal(0, day_sd, n_days))
+    d = np.repeat(np.arange(n_days), slots)
+    a = r.normal(0, np.repeat(sd, slots))
+    return pd.DataFrame({"a": a, "lo": -1.28, "hi": 1.28, "d": d, "c": "all"})
+
+
 def test_storm_is_first_and_too_narrow():
     t = where_to_look(make(), "a", "lo", "hi", "c")
     assert t.index[0] == "storm" and t.loc["storm", "advice"] == "too narrow"
@@ -37,7 +46,7 @@ def test_width_share_is_fraction():
 
 def test_exact_score_arithmetic():
     d = pd.DataFrame({"a": [5.0], "lo": [0.0], "hi": [2.0], "c": ["x"]})
-    t = where_to_look(d, "a", "lo", "hi", "c")
+    t = where_to_look(d, "a", "lo", "hi", "c", min_cases=1)
     assert t.loc["x", "mean_score"] == 2.0 + 10 * 3.0
     assert t.loc["x", "hit_rate"] == 0.0
 
@@ -51,3 +60,33 @@ def test_refuses_missing_and_crossed():
     d.loc[0, ["lo", "hi"]] = [3, 1]
     with pytest.raises(ValueError):
         where_to_look(d, "a", "lo", "hi", "c")
+
+
+def test_cases_count_days_not_rows():
+    t = where_to_look(days(), "a", "lo", "hi", "c", day="d")
+    assert t.loc["all", "cases"] == 60
+
+
+def test_day_clustering_widens_interval():
+    d = days()
+    by_day = where_to_look(d, "a", "lo", "hi", "c", day="d").loc["all"]
+    by_row = where_to_look(d, "a", "lo", "hi", "c").loc["all"]
+    assert by_day["hit_high"] - by_day["hit_low"] > 3 * (by_row["hit_high"] - by_row["hit_low"])
+
+
+def test_not_enough_days():
+    t = where_to_look(days(n_days=10), "a", "lo", "hi", "c", day="d")
+    assert t.loc["all", "advice"] == "not enough data"
+
+
+def test_interval_contains_rate():
+    t = where_to_look(days(), "a", "lo", "hi", "c", day="d").loc["all"]
+    assert t["hit_low"] <= t["hit_rate"] <= t["hit_high"]
+
+
+def test_excess_zero_sum_with_days_and_hours():
+    d = days(n_days=40, slots=24)
+    d["c"] = np.tile(np.arange(24), 40)
+    t = where_to_look(d, "a", "lo", "hi", "c", day="d")
+    assert t["excess"].sum() == pytest.approx(0, abs=1e-9)
+    assert (t["cases"] == 40).all()
